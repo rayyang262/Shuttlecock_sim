@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SPH Fluid Simulation – Phase 1</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #0a0a12; overflow: hidden; }
+      canvas { display: block; }
+      #side-label {
+        position: fixed;
+        right: 10px;
+        bottom: 136px;
+        color: rgba(255,255,255,0.55);
+        font: 11px/1 monospace;
+        pointer-events: none;
+        letter-spacing: 0.05em;
+      }
+      #side-border {
+        position: fixed;
+        right: 10px;
+        bottom: 10px;
+        width: 340px;
+        height: 120px;
+        border: 1px solid rgba(255,255,255,0.25);
+        border-radius: 3px;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="side-label">SIDE VIEW</div>
+    <div id="side-border"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
