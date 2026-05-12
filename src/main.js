@@ -1,9 +1,5 @@
 /**
- * main.js — Unified Terrain
- *
- * One continuous sloped+noisy terrain mesh covers the whole domain.
- * Floor tilts left-low / right-high so gravity naturally drains water leftward.
- * Coastline is defined by where the terrain crosses y=0 (the waterline).
+ * main.js — SPH Ocean Simulator
  */
 
 import * as THREE from 'three';
@@ -13,43 +9,34 @@ import { SPHSolver, DEFAULT_PARAMS } from './sim/SPHSolver.js';
 import { ParticleRenderer } from './render/ParticleRenderer.js';
 import { buildTerrain, updateWetness } from './scene/TerrainBuilder.js';
 import { buildCamera, handleResize, attachZoom } from './scene/CameraSetup.js';
-import { buildGUI, buildForceGUI } from './ui/GUIControls.js';
+import { FluidRenderer } from './render/FluidRenderer.js';
+import { InteractionHandler } from './sim/InteractionHandler.js';
 
 // ─── Renderer ────────────────────────────────────────────────────────────────
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(window.devicePixelRatio);
+const isMobile = window.innerWidth < 768 || /Mobi|Android/i.test(navigator.userAgent);
+
+const renderer = new THREE.WebGLRenderer({ antialias: !isMobile });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobile ? 1.5 : 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.autoClear = false;
 document.body.appendChild(renderer.domElement);
 
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a1520);
-
-// ─── Lighting ────────────────────────────────────────────────────────────────
+scene.background = new THREE.Color(0x000000);
 
 scene.add(new THREE.AmbientLight(0xffd090, 0.55));
 const sunLight = new THREE.DirectionalLight(0xffffff, 2.5);
 sunLight.position.set(0, 100, 0);
 scene.add(sunLight);
 
-// ─── Cameras ─────────────────────────────────────────────────────────────────
+// ─── Camera ──────────────────────────────────────────────────────────────────
 
-// Top-down orthographic (default)
-const camera = buildCamera(100, 60);
+const camera = buildCamera(60, 100);
 const detachZoom = attachZoom(camera, renderer.domElement);
-
-// Side view: looks from +Z, shows X-Y cross-section of the slope
-const sideCamera = (() => {
-  const cam = new THREE.OrthographicCamera(-55, 55, 10, -10, 0.1, 500);
-  cam.position.set(0, 2.5, 200);
-  cam.up.set(0, 1, 0);
-  cam.lookAt(0, 2.5, 0);
-  cam.updateProjectionMatrix();
-  return cam;
-})();
 
 // ─── Stats ───────────────────────────────────────────────────────────────────
 
@@ -57,97 +44,69 @@ const stats = new Stats();
 stats.showPanel(0);
 document.body.appendChild(stats.dom);
 
-// ─── GUI params ──────────────────────────────────────────────────────────────
+// ─── Simulation config ────────────────────────────────────────────────────────
 
-const params = {
+const CFG = {
   // Wave field
-  wave1Amp:      DEFAULT_PARAMS.wave1Amp,
-  wave1Period:   DEFAULT_PARAMS.wave1Period,
-  waveVariation: DEFAULT_PARAMS.waveVariation,
-  waveSpread:    DEFAULT_PARAMS.waveSpread,
-  waveNoiseMod:  DEFAULT_PARAMS.waveNoiseMod,
-  waveIntensity: DEFAULT_PARAMS.waveIntensity,
+  wave1Amp:                 10,
+  wave1Period:              4.5,
+  waveVariation:            1,
+  waveSpread:               0,
+  waveNoiseMod:             0.3,
+  waveIntensity:            1,
+  surfaceNeighborThreshold: 3,
 
-  numParticles:        DEFAULT_PARAMS.numParticles,
-  substeps:            DEFAULT_PARAMS.substeps,
-  particleMassDisplay: 0,
-  paused:              false,
+  // Simulation
+  numParticles:  isMobile ? 2500 : DEFAULT_PARAMS.numParticles,
+  substeps:      DEFAULT_PARAMS.substeps,
 
   // Terrain
-  slopeAngleDeg:    DEFAULT_PARAMS.slopeAngleDeg,
-  terrainNoiseSeed:  1,
-  terrainNoiseAmp:   0.3,
-  terrainNoiseFreq:  0.06,
-  wetnessRate:       0.005,
+  slopeAngleDeg:    4,
+  terrainNoiseSeed: 1,
+  terrainNoiseAmp:  0.3,
+  terrainNoiseFreq: 0.06,
+  wetnessRate:      0.005,
 
-  // Camera
-  cameraZoom:  1.0,
-  sideView:    false,
+  // Fluid rendering
+  splatRadius:    2,
+  blurRadius:     8,
+  fluidThreshold: 0.55,
+  fluidSoftness:  0.015,
+  specPower:      80,
+  crestBrightness: 0.95,
+  crestThreshold:  0.5,
+  oceanDensityMin: 0.8,
+  oceanDensityMax: 0.55,
+  densityScale:    2,
 
-  // Fluid
+  // Water colours
+  waterDeep:    '#0082E0',
+  waterMid:     '#00C0D1',
+  waterShallow: '#8AE7D4',
+  waterFoam:    '#deeeff',
+  waterPosBlend: 0.35,
+
+  // Interaction
+  forceRadius:   2,
+  forceStrength: 5,
+  falloffExp:    2,
+
+  // Physics
   gasConstant:    DEFAULT_PARAMS.gasConstant,
   viscosityCoeff: DEFAULT_PARAMS.viscosityCoeff,
   gravity:        DEFAULT_PARAMS.gravity,
   beachFriction:  DEFAULT_PARAMS.beachFriction,
-
-  // Force Manager
-  driftForce: DEFAULT_PARAMS.driftForce,
-  currentX:   DEFAULT_PARAMS.currentX,
-  currentZ:   DEFAULT_PARAMS.currentZ,
-  windX:      DEFAULT_PARAMS.windX,
+  driftForce:     DEFAULT_PARAMS.driftForce,
+  currentX:       DEFAULT_PARAMS.currentX,
+  currentZ:       1,
+  windX:          DEFAULT_PARAMS.windX,
 };
 
 // ─── Mutable simulation objects ───────────────────────────────────────────────
 
-let solver, pRenderer, terrainData, gui, forceGui;
+let solver, pRenderer, terrainData, fluidRenderer, interaction;
 
-// ─── Live update — push GUI values into the running solver ───────────────────
-
-function liveUpdate() {
-  if (!solver) return;
-  solver.cfg.wave1Amp      = params.wave1Amp;
-  solver.cfg.wave1Period   = params.wave1Period;
-  solver.cfg.waveVariation = params.waveVariation;
-  solver.cfg.waveSpread    = params.waveSpread;
-  solver.cfg.waveNoiseMod  = params.waveNoiseMod;
-  solver.cfg.waveIntensity = params.waveIntensity;
-  solver.cfg.beachFriction = params.beachFriction;
-  solver.cfg.gasConstant     = params.gasConstant;
-  solver.cfg.viscosityCoeff  = params.viscosityCoeff;
-  solver.cfg.gravity         = params.gravity;
-  solver.cfg.substeps        = params.substeps;
-  // Force Manager
-  solver.cfg.driftForce = params.driftForce;
-  solver.cfg.currentX   = params.currentX;
-  solver.cfg.currentZ   = params.currentZ;
-  solver.cfg.windX      = params.windX;
-  camera.zoom = params.cameraZoom;
-  camera.updateProjectionMatrix();
-}
-
-// ─── Terrain rebuild — regenerate mesh + update solver callback ───────────────
-
-function rebuildTerrain() {
-  if (terrainData) {
-    scene.remove(terrainData.mesh);
-    terrainData.mesh.geometry.dispose();
-    terrainData.mesh.material.dispose();
-  }
-
-  const cfg = {
-    ...DEFAULT_PARAMS,
-    slopeAngleDeg:   params.slopeAngleDeg,
-    terrainNoiseSeed: params.terrainNoiseSeed,
-    terrainNoiseAmp:  params.terrainNoiseAmp,
-    terrainNoiseFreq: params.terrainNoiseFreq,
-  };
-  terrainData = buildTerrain(cfg);
-  scene.add(terrainData.mesh);
-
-  if (solver) solver.cfg.terrainFn = terrainData.terrainFn;
-}
-
-// ─── Full rebuild ─────────────────────────────────────────────────────────────
+// ─── Build ────────────────────────────────────────────────────────────────────
 
 function rebuild() {
   if (terrainData) {
@@ -160,111 +119,131 @@ function rebuild() {
     pRenderer.mesh.geometry.dispose();
     pRenderer.mesh.material.dispose();
   }
-  if (gui)      { gui.destroy();      gui      = null; }
-  if (forceGui) { forceGui.destroy(); forceGui = null; }
+  if (fluidRenderer) { fluidRenderer.dispose(); fluidRenderer = null; }
+  if (interaction)   { interaction.dispose();   interaction   = null; }
 
-  const terrainCfg = {
+  terrainData = buildTerrain({
     ...DEFAULT_PARAMS,
-    slopeAngleDeg:   params.slopeAngleDeg,
-    terrainNoiseSeed: params.terrainNoiseSeed,
-    terrainNoiseAmp:  params.terrainNoiseAmp,
-    terrainNoiseFreq: params.terrainNoiseFreq,
-  };
-  terrainData = buildTerrain(terrainCfg);
+    slopeAngleDeg:    CFG.slopeAngleDeg,
+    terrainNoiseSeed: CFG.terrainNoiseSeed,
+    terrainNoiseAmp:  CFG.terrainNoiseAmp,
+    terrainNoiseFreq: CFG.terrainNoiseFreq,
+  });
+  terrainData.mesh.visible = false;
   scene.add(terrainData.mesh);
 
   solver = new SPHSolver({
-    numParticles:    params.numParticles,
-    wave1Amp:        params.wave1Amp,
-    wave1Period:     params.wave1Period,
-    waveVariation:   params.waveVariation,
-    waveSpread:      params.waveSpread,
-    waveNoiseMod:    params.waveNoiseMod,
-    waveIntensity:   params.waveIntensity,
-    beachFriction:   params.beachFriction,
-    gasConstant:     params.gasConstant,
-    viscosityCoeff:  params.viscosityCoeff,
-    gravity:         params.gravity,
-    substeps:        params.substeps,
-    slopeAngleDeg:   params.slopeAngleDeg,
-    terrainFn:       terrainData.terrainFn,
-    driftForce:      params.driftForce,
-    currentX:        params.currentX,
-    currentZ:        params.currentZ,
-    windX:           params.windX,
+    numParticles:             CFG.numParticles,
+    wave1Amp:                 CFG.wave1Amp,
+    wave1Period:              CFG.wave1Period,
+    waveVariation:            CFG.waveVariation,
+    waveSpread:               CFG.waveSpread,
+    waveNoiseMod:             CFG.waveNoiseMod,
+    waveIntensity:            CFG.waveIntensity,
+    surfaceNeighborThreshold: CFG.surfaceNeighborThreshold,
+    beachFriction:            CFG.beachFriction,
+    gasConstant:              CFG.gasConstant,
+    viscosityCoeff:           CFG.viscosityCoeff,
+    gravity:                  CFG.gravity,
+    substeps:                 CFG.substeps,
+    slopeAngleDeg:            CFG.slopeAngleDeg,
+    terrainFn:                terrainData.terrainFn,
+    driftForce:               CFG.driftForce,
+    currentX:                 CFG.currentX,
+    currentZ:                 CFG.currentZ,
+    windX:                    CFG.windX,
   });
-
-  params.particleMassDisplay = +solver.cfg.particleMass.toFixed(2);
 
   const fcfg = solver.cfg;
   pRenderer = new ParticleRenderer(
-    scene,
-    fcfg.numParticles,
-    fcfg.smoothingRadius * 0.4,
-    0,
+    scene, fcfg.numParticles, fcfg.smoothingRadius * 0.4, 0,
     { boundsMin: fcfg.boundsMin, boundsMax: fcfg.boundsMax },
   );
+  pRenderer.mesh.visible = false;
 
-  gui      = buildGUI(params, { liveUpdate, rebuild, rebuildTerrain });
-  forceGui = buildForceGUI(params, liveUpdate);
+  fluidRenderer = new FluidRenderer(renderer, camera, solver.cfg.numParticles, {
+    splatRadius:     CFG.splatRadius,
+    densityScale:    CFG.densityScale,
+    blurRadius:      CFG.blurRadius,
+    threshold:       CFG.fluidThreshold,
+    softness:        CFG.fluidSoftness,
+    specPower:       CFG.specPower,
+    crestBrightness: CFG.crestBrightness,
+    crestThreshold:  CFG.crestThreshold,
+    oceanDensityMin: CFG.oceanDensityMin,
+    oceanDensityMax: CFG.oceanDensityMax,
+    deepColor:       CFG.waterDeep,
+    midColor:        CFG.waterMid,
+    shallowColor:    CFG.waterShallow,
+    foamColor:       CFG.waterFoam,
+    posBlend:        CFG.waterPosBlend,
+  });
+  fluidRenderer.setBounds(solver.cfg.boundsMin, solver.cfg.boundsMax);
+  fluidRenderer.setYBounds(-1.0, 4.0);
+
+  interaction = new InteractionHandler(renderer, camera);
+  interaction.forceRadius   = CFG.forceRadius;
+  interaction.forceStrength = CFG.forceStrength;
+  interaction.falloffExp    = CFG.falloffExp;
 }
 
 // ─── Initial build ────────────────────────────────────────────────────────────
 
 rebuild();
 
+// ─── Loading screen fade ──────────────────────────────────────────────────────
+
+setTimeout(() => {
+  const el = document.getElementById('loading');
+  if (!el) return;
+  el.classList.add('fade-out');
+  setTimeout(() => el.parentNode && el.parentNode.removeChild(el), 900);
+}, 2800);
+
 // ─── Resize ──────────────────────────────────────────────────────────────────
 
-window.addEventListener('resize', () => handleResize(camera, renderer));
+window.addEventListener('resize', () => {
+  handleResize(camera, renderer);
+  if (fluidRenderer) fluidRenderer.resize();
+});
 
 // ─── Animation loop ──────────────────────────────────────────────────────────
 
-function animate() {
+function animate(timestamp) {
   requestAnimationFrame(animate);
   stats.begin();
 
-  if (!params.paused) {
-    const steps = solver.cfg.substeps;
-    for (let s = 0; s < steps; s++) solver.step();
+  const steps = solver.cfg.substeps;
+  for (let s = 0; s < steps; s++) solver.step();
+  pRenderer.update(solver.positions, solver.velocities);
 
-    updateWetness(
-      terrainData.wetGrid,
-      terrainData.wetTexture,
-      solver.positions,
-      solver.cfg.numParticles,
-      solver.cfg,
-      terrainData.terrainFn,
-      params.wetnessRate,
-    );
+  interaction.update(solver, timestamp);
 
-    params.particleMassDisplay = +solver.cfg.particleMass.toFixed(2);
-    pRenderer.update(solver.positions, solver.velocities);
-  }
+  // Density → blur → edge mask → wetness pipeline
+  fluidRenderer.updatePositions(solver.positions);
+  fluidRenderer.renderDensityPass();
+  fluidRenderer.renderBlurPass();
+  fluidRenderer.renderMaskPass();
+  fluidRenderer.renderWetnessDownsample();
+  const densityPixels = fluidRenderer.readWetnessPixels();
+  updateWetness(
+    terrainData.wetGrid, terrainData.wetTexture,
+    densityPixels, solver.cfg, terrainData.terrainFn,
+    CFG.wetnessRate, CFG.fluidThreshold,
+  );
 
-  const W = window.innerWidth;
-  const H = window.innerHeight;
+  // Render
+  const W = window.innerWidth, H = window.innerHeight;
+  renderer.setRenderTarget(null);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, W, H);
+  renderer.clear(true, true, true);
 
-  if (params.sideView) {
-    // Side view fills the full canvas
-    renderer.setScissorTest(false);
-    renderer.setViewport(0, 0, W, H);
-    renderer.render(scene, sideCamera);
-  } else {
-    // Top-down fills the full canvas + small side inset
-    renderer.setScissorTest(false);
-    renderer.setViewport(0, 0, W, H);
-    renderer.render(scene, camera);
-
-    const IW = 340, IH = 120;
-    const IX = W - IW - 10, IY = 10;
-    renderer.setScissorTest(true);
-    renderer.setScissor(IX, IY, IW, IH);
-    renderer.setViewport(IX, IY, IW, IH);
-    renderer.render(scene, sideCamera);
-    renderer.setScissorTest(false);
-  }
+  renderer.render(scene, camera);
+  fluidRenderer.renderWaterComposite();
+  interaction.renderCursor(camera);
 
   stats.end();
 }
 
-animate();
+animate(performance.now());

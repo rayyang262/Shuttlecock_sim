@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ocean — Interactive SPH Fluid Simulation</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:        #050d14;
+      --surface:   #0a1520;
+      --border:    rgba(126,200,227,0.12);
+      --accent:    #7ec8e3;
+      --accent2:   #00C0D1;
+      --text:      #d4e8f0;
+      --muted:     rgba(212,232,240,0.45);
+      --tag-bg:    rgba(126,200,227,0.08);
+      --max:       780px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 400 16px/1.7 system-ui, -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Layout ── */
+    .page { max-width: var(--max); margin: 0 auto; padding: 0 28px 100px; }
+
+    /* ── Nav ── */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 28px 0 0;
+      margin-bottom: 72px;
+    }
+    .nav-back {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      transition: color 0.2s;
+    }
+    .nav-back:hover { color: var(--accent); }
+    .nav-back::before { content: '← '; }
+
+    /* ── Hero ── */
+    .hero { margin-bottom: 64px; }
+
+    .kicker {
+      font-size: 11px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent2);
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      font-size: clamp(28px, 5vw, 44px);
+      font-weight: 600;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      color: #fff;
+      margin-bottom: 20px;
+    }
+
+    .tagline {
+      font-size: 18px;
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 560px;
+    }
+
+    /* ── Demo block ── */
+    .demo-block {
+      width: 100%;
+      aspect-ratio: 9 / 16;
+      max-height: 640px;
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 72px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .demo-block iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+    .demo-placeholder {
+      text-align: center;
+      color: var(--muted);
+    }
+    .demo-placeholder span {
+      display: block;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-top: 10px;
+    }
+
+    /* ── Sections ── */
+    section { margin-bottom: 60px; }
+
+    h2 {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    p { color: var(--text); margin-bottom: 14px; }
+    p:last-child { margin-bottom: 0; }
+
+    /* ── Feature list ── */
+    .feature-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .feature-list li {
+      display: grid;
+      grid-template-columns: 20px 1fr;
+      gap: 14px;
+      align-items: baseline;
+    }
+    .feature-list li::before {
+      content: '—';
+      color: var(--accent2);
+      font-size: 14px;
+    }
+    .feature-list strong {
+      color: #fff;
+      font-weight: 500;
+    }
+
+    /* ── Challenge cards ── */
+    .challenges {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .challenge-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 20px 22px;
+    }
+    .challenge-card h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 6px;
+      letter-spacing: 0.01em;
+    }
+    .challenge-card p {
+      font-size: 14px;
+      color: var(--muted);
+      margin: 0;
+      line-height: 1.6;
+    }
+
+    /* ── Stack tags ── */
+    .stack {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .tag {
+      background: var(--tag-bg);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 5px 12px;
+      font-size: 13px;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Links ── */
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .link-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+      letter-spacing: 0.03em;
+      transition: opacity 0.2s;
+    }
+    .link-btn:hover { opacity: 0.8; }
+    .link-btn.primary {
+      background: var(--accent2);
+      color: #000;
+    }
+    .link-btn.secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    /* ── Divider ── */
+    hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 56px 0;
+    }
+
+    @media (max-width: 520px) {
+      .page { padding: 0 18px 72px; }
+      nav { margin-bottom: 48px; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <nav>
+    <a class="nav-back" href="/">Work</a>
+  </nav>
+
+  <!-- ── Hero ── -->
+  <header class="hero">
+    <p class="kicker">Interactive Simulation &nbsp;·&nbsp; WebGL &nbsp;·&nbsp; 2025</p>
+    <h1>Ocean</h1>
+    <p class="tagline">Real-time particle-based fluid simulation rendered as continuous water, with mouse-driven interaction.</p>
+  </header>
+
+  <!-- ── Demo ── -->
+  <div class="demo-block">
+    <!-- Replace src with your live demo URL or swap for a <video> tag -->
+    <!-- <iframe src="https://your-demo-url.com" allow="fullscreen"></iframe> -->
+    <div class="demo-placeholder">
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="rgba(126,200,227,0.3)" stroke-width="1.5">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg>
+      <span>Live demo / video</span>
+    </div>
+  </div>
+
+  <!-- ── Overview ── -->
+  <section>
+    <h2>Overview</h2>
+    <p>
+      Ocean is a real-time fluid simulation running entirely in the browser using
+      Smoothed Particle Hydrodynamics (SPH) — the same physics technique used in
+      visual effects and engineering tools. Five thousand particles interact under
+      pressure, viscosity, and gravity every frame, rendered not as individual
+      spheres but as a continuous water surface reconstructed from their density field.
+    </p>
+    <p>
+      The project grew out of curiosity about how games and film achieve believable
+      water without full computational fluid dynamics. SPH trades physical accuracy
+      for real-time performance, and the challenge of making that tradeoff invisible
+      — through rendering, wave generation, and interaction design — drove most of
+      the interesting engineering work.
+    </p>
+    <p>
+      Waves are generated by a multi-frequency Phillips-spectrum field applied at
+      the bottom edge of the domain and propagate up the sloped seabed toward the
+      beach. The mouse applies a smooth radial force field to the fluid, letting you
+      drag, scatter, and deflect the water in real time.
+    </p>
+  </section>
+
+  <!-- ── Technical approach ── -->
+  <section>
+    <h2>Technical Approach</h2>
+    <ul class="feature-list">
+      <li>
+        <strong>SPH physics</strong> — Müller et al. 2003 formulation: Poly6 kernel
+        for density, Spiky kernel for pressure gradient, viscosity Laplacian for
+        momentum diffusion. Symplectic Euler integration at fixed substeps per frame.
+      </li>
+      <li>
+        <strong>Multi-frequency wave generation</strong> — Five sine waves summed
+        with Phillips-spectrum amplitude weighting (longer periods carry more energy).
+        Slow amplitude modulation creates natural wave-set variation.
+        Primary propagation in −Z via <code>kx = k·sin θ, kz = −k·cos θ</code>.
+      </li>
+      <li>
+        <strong>Screen-space fluid rendering</strong> — Particles are splatted as
+        Gaussian circles into a density render target, blurred with a separable
+        9-tap Gaussian, then thresholded against a three-stop colour ramp. Height-weighted
+        splats make wave crests visibly brighter than troughs without 3D geometry.
+      </li>
+      <li>
+        <strong>Density-driven crest foam</strong> — A contrast-stretched density
+        window drives a foam overlay independently of the base colour, so whitecaps
+        appear only where particle density genuinely peaks — at real wave crests.
+      </li>
+      <li>
+        <strong>Mouse interaction</strong> — Orthographic raycast to the Y=0 plane
+        gives world-space cursor position. A smooth quadratic falloff applies drag
+        velocity to all particles within a configurable radius each frame.
+      </li>
+      <li>
+        <strong>Procedural coastline</strong> — A continuous terrain mesh uses
+        Simplex noise on top of a linear slope. Floor height drives beach friction,
+        particle recycling, and sand wetness — all without explicit coastline geometry.
+      </li>
+      <li>
+        <strong>Wet/dry sand</strong> — The masked density buffer is downsampled
+        to 128×80 each frame and read back to CPU. Cells above the fluid threshold
+        accumulate wetness; all cells dry slowly each frame.
+      </li>
+    </ul>
+  </section>
+
+  <hr>
+
+  <!-- ── Key challenges ── -->
+  <section>
+    <h2>Key Challenges</h2>
+    <div class="challenges">
+
+      <div class="challenge-card">
+        <h3>Surface detection without height thresholds</h3>
+        <p>
+          Wave forces should only drive the top layer of particles — buried particles
+          should be pushed by SPH pressure, not by direct wave force. An absolute Y
+          threshold fails in turbulent conditions. The solution: count neighbors whose
+          Y exceeds the particle's Y by at least 0.3h during the density pass. Particles
+          with fewer than <em>n</em> such neighbors are flagged as surface and receive
+          the wave field force. This works at any depth and costs nothing extra since
+          the neighbor list is already built.
+        </p>
+      </div>
+
+      <div class="challenge-card">
+        <h3>Making wave crests visible in a top-down projection</h3>
+        <p>
+          Top-down orthographic projection collapses Y entirely — a crest and a trough
+          at the same XZ position look identical in the density buffer. The fix: splat
+          weight is a steep quadratic function of particle Y, ranging from 0.05 (seabed)
+          to 1.5 (crest). Elevated particles contribute 30× more to the density field,
+          making crests spike clearly above the flat ocean. A second contrast-stretch
+          window then maps those spikes to the full foam range.
+        </p>
+      </div>
+
+      <div class="challenge-card">
+        <h3>O(N) neighbor search at 5000 particles</h3>
+        <p>
+          Naïve all-pairs neighbor search is O(N²) — 25 million comparisons per
+          substep at 5000 particles, far too slow for real time. A spatial hash maps
+          each particle to a grid cell of size h, then each density/force query checks
+          only the 27 surrounding cells. In practice this reduces the average neighbor
+          search to ~30–50 candidates regardless of N, keeping the simulation comfortably
+          above 60 fps on a mid-range laptop GPU.
+        </p>
+      </div>
+
+      <div class="challenge-card">
+        <h3>Edge artefacts in screen-space fluid</h3>
+        <p>
+          Gaussian blur halos extend past the domain boundary and, after thresholding,
+          produce phantom water strips at the simulation edges. A mask pass runs after
+          blur and zeroes density within a configurable world-unit margin of all non-coastline
+          walls. The coastline edge is intentionally excluded so the water-meets-sand
+          boundary renders correctly. A matching suppression in the water composite
+          shader prevents specular highlights from spiking at the same edges.
+        </p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── Stack ── -->
+  <section>
+    <h2>Tech Stack</h2>
+    <div class="stack">
+      <span class="tag">Three.js</span>
+      <span class="tag">Vanilla JS</span>
+      <span class="tag">GLSL Shaders</span>
+      <span class="tag">WebGL</span>
+      <span class="tag">Vite</span>
+      <span class="tag">Simplex Noise</span>
+    </div>
+  </section>
+
+  <!-- ── Links ── -->
+  <section>
+    <h2>Links</h2>
+    <div class="links">
+      <a class="link-btn primary" href="#" target="_blank" rel="noopener">Live Demo</a>
+      <a class="link-btn secondary" href="#" target="_blank" rel="noopener">GitHub</a>
+      <a class="link-btn secondary" href="#" target="_blank" rel="noopener">Process Video</a>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

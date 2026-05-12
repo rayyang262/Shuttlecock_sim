@@ -48,24 +48,23 @@ export function buildCamera(domainW = 100, domainD = 60) {
 
   const aspect = window.innerWidth / window.innerHeight;
 
-  // Compute frustum half-extents that keep the full domain visible.
-  // We fit to the tighter axis so nothing is clipped.
-  const fitScale = _fitScale(halfW, halfD, aspect);
+  // "Cover" mode: always fill the viewport completely — no black bars.
+  // If the viewport is wider than the domain aspect, we fit the domain width
+  // and crop Z.  If narrower, we fit the domain depth and crop X.
+  // Either way every pixel is occupied by the simulation.
+  const { left, right, top, bottom } = _coverFrustum(halfW, halfD, aspect);
 
   const camera = new THREE.OrthographicCamera(
-    -halfW * fitScale,  // left
-     halfW * fitScale,  // right
-     halfD * fitScale,  // top
-    -halfD * fitScale,  // bottom
-    0.1,                // near
-    500,                // far
+    left, right, top, bottom,
+    0.1,   // near
+    500,   // far
   );
 
   camera.position.set(0, 100, 0);
   camera.up.set(0, 0, -1);
   camera.lookAt(0, 0, 0);
 
-  // Store half-extents on camera for use in handleResize
+  // Store domain half-extents so handleResize can recalculate correctly
   camera.userData.halfW = halfW;
   camera.userData.halfD = halfD;
 
@@ -90,14 +89,12 @@ export function handleResize(camera, renderer) {
 
   const aspect = w / h;
   const { halfW, halfD } = camera.userData;
-  const fitScale = _fitScale(halfW, halfD, aspect);
+  const { left, right, top, bottom } = _coverFrustum(halfW, halfD, aspect);
 
-  // Re-apply fit scale; zoom is stored as camera.zoom which Three multiplies
-  // into the projection matrix separately.
-  camera.left   = -halfW * fitScale;
-  camera.right  =  halfW * fitScale;
-  camera.top    =  halfD * fitScale;
-  camera.bottom = -halfD * fitScale;
+  camera.left   = left;
+  camera.right  = right;
+  camera.top    = top;
+  camera.bottom = bottom;
 
   camera.updateProjectionMatrix();
 }
@@ -135,31 +132,34 @@ export function attachZoom(camera, domElement) {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
- * Compute a uniform scale factor so that the domain (halfW × halfD) fits
- * entirely within the current aspect ratio without distortion.
+ * "Cover" frustum: always fills the viewport with no black bars.
  *
- * We want: frustumWidth  = halfW * fitScale * 2  >= domainW
- *          frustumHeight = halfD * fitScale * 2  >= domainD
+ * Domain aspect = halfW / halfD  (50/30 ≈ 1.667).
  *
- * Choosing fitScale = max(1, domainD/(domainW/aspect)) ensures neither axis
- * is clipped.  For a landscape viewport this is usually 1.0; for portrait or
- * very wide domains it scales up to reveal the full extent.
+ * Wide viewport  (aspect ≥ domainAspect): fit the domain width exactly,
+ *   set height from viewport aspect → some Z is cropped off screen.
+ *
+ * Tall viewport  (aspect <  domainAspect): fit the domain depth exactly,
+ *   set width from viewport aspect → some X is cropped off screen.
+ *
+ * Either way the viewport is pixel-perfectly filled by the simulation
+ * with square pixels and no letterboxing/pillarboxing.
  *
  * @param {number} halfW
  * @param {number} halfD
- * @param {number} aspect   window.innerWidth / window.innerHeight
- * @returns {number}
+ * @param {number} aspect  window.innerWidth / window.innerHeight
+ * @returns {{ left, right, top, bottom }}
  */
-function _fitScale(halfW, halfD, aspect) {
-  // The frustum naturally shows halfW * aspect  height worth of world-units
-  // when aspect > 1 (landscape).  We need at least halfD height visible.
-  const heightNeeded = halfD;
-  const heightFromAspect = halfW / aspect;
+function _coverFrustum(halfW, halfD, aspect) {
+  const domainAspect = halfW / halfD;
 
-  if (heightFromAspect < heightNeeded) {
-    // Viewport is too wide — scale up so height fits
-    return heightNeeded / heightFromAspect;
+  if (aspect >= domainAspect) {
+    // Wider than domain — lock X to domain width, derive Z from aspect
+    const halfH = halfW / aspect;
+    return { left: -halfW, right: halfW, top: halfH, bottom: -halfH };
+  } else {
+    // Taller than domain — lock Z to domain depth, derive X from aspect
+    const halfR = halfD * aspect;
+    return { left: -halfR, right: halfR, top: halfD, bottom: -halfD };
   }
-
-  return 1.0;
 }

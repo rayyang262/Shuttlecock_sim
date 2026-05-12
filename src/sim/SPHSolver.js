@@ -39,12 +39,10 @@
  *
  * ─── Ocean Simulation (Phase 3+) ────────────────────────────────────────────
  *
- * PISTON WAVE MAKER (left wall):
- *   x_wall(t) = x_min + A·sin(2πft),  v_wall(t) = A·2πf·cos(2πft)
- *   Elastic collision:  v_after = v_wall − e·(v − v_wall)
- *   Period T = 1/f — exposed as waveMakerPeriod (default 8 s).
- *   Amplitude scaled from old 8-unit domain to new 100-unit domain:
- *     amp_new = 0.4 * (100/8) = 5.0 units
+ * WAVE FIELD (bottom of domain, high Z):
+ *   Field-based wave forcing applied to surface particles whose Z > waveZoneZ.
+ *   Five sine waves summed (Phillips spectrum), primary direction −Z (toward beach).
+ *   Taper: alpha² decays force smoothly toward waveZoneZ boundary.
  *
  * TERRAIN COLLISION (callback-driven floor):
  *   cfg.terrainFn(x, z) returns the floor height at any world position.
@@ -52,17 +50,12 @@
  *   Floor collision uses 3D finite-difference normal so particles slide
  *   down-slope back into the ocean under gravity.
  *
- * BOUNDARIES:
- *     LEFT  (x < boundsMin[0]):   soft reflect (piston-safe)
- *     RIGHT (x > boundsMax[0]):   hard reflect
- *     TOP   (y > boundsMax[1]):   hard reflect
- *     Z walls (±boundsMax[2]):    reflective
+ * BOUNDARIES (portrait domain: 60 × 15 × 100 world units):
+ *     X walls (±30):              reflective side walls
+ *     BOTTOM (z > +50):           hard reflect — ocean / wave-zone wall
+ *     TOP    (z < −50):           hard reflect — beach overshoot wall
+ *     CEILING (y > +10):          hard reflect
  *     FLOOR:                      slope-normal collision via _floorHeight
- *
- * SOFT LEFT-WALL REFLECT + WAVE-MAKER PISTON:
- *   Same as Phase 2 — soft reflect runs first so piston only acts on
- *   the advance stroke (no suction on retreat). Repositioned to
- *   boundsMin[0] = -50 for the new domain.
  */
 
 import { SpatialHash } from './SpatialHash.js';
@@ -97,12 +90,12 @@ export const DEFAULT_PARAMS = {
   substeps:    3,
   wallDamping: 0.4,
 
-  // Domain — 100 × 15 × 60 world units
-  boundsMin: [-50, -5, -30],
-  boundsMax: [ 50, 10,  30],
+  // Domain — 60 × 15 × 100 world units
+  boundsMin: [-30, -5, -50],
+  boundsMax: [ 30, 10,  50],
 
-  // Global terrain slope (left=low, right=high).
-  // computeDerivedConfig derives waterlineX from this.
+  // Global terrain slope (bottom=low, top=high along Z).
+  // computeDerivedConfig derives waterlineZ from this.
   slopeAngleDeg: 4,
 
   // ── Multi-frequency wave field ────────────────────────────────────────────
@@ -116,6 +109,13 @@ export const DEFAULT_PARAMS = {
   waveNoiseMod:  0.3,   // modulation depth (0 = steady, 1 = strong variation)
   // Master
   waveIntensity: 1.0,   // overall multiplier
+
+  // Surface detection: wave force applied only to particles that have fewer
+  // than this many neighbors strictly above them (y_j > y_i + 0.3h).
+  // These are computed for free during the density pass using the existing hash.
+  // Lower value → only the very top particles get force (sharp surface).
+  // Higher value → thicker "surface layer" gets force.
+  surfaceNeighborThreshold: 3,
 
   // Per-step friction where floor is above the waterline
   beachFriction: 0.998,
@@ -154,24 +154,24 @@ export const DEFAULT_PARAMS = {
  * @returns {object} Complete config including all derived fields
  */
 export function computeDerivedConfig(p) {
-  // X where the sloped floor crosses y=0 (the waterline).
-  // terrainFn(x,z) ≈ boundsMin[1] + tan(slope)*(x - boundsMin[0])
-  // Setting = 0 → x = boundsMin[0] + |boundsMin[1]| / tan(slope)
+  // Z where the sloped floor crosses y=0 (the waterline).
+  // terrainFn(x,z) ≈ boundsMin[1] + tan(slope)*(boundsMax[2] - z)
+  // Setting = 0 → z = boundsMax[2] - |boundsMin[1]| / tan(slope)
   const slopeTan    = Math.tan(((p.slopeAngleDeg || 4) * Math.PI) / 180);
-  const waterlineX  = Math.min(
-    p.boundsMin[0] + Math.abs(p.boundsMin[1]) / slopeTan,
-    p.boundsMax[0],
+  const waterlineZ  = Math.max(
+    p.boundsMax[2] - Math.abs(p.boundsMin[1]) / slopeTan,
+    p.boundsMin[2],
   );
 
-  // Fill volume: triangular prism from left wall to waterlineX, full Z extent.
+  // Fill volume: triangular prism from waterlineZ to boundsMax[2], full X extent.
   // Average depth = |boundsMin[1]| / 2 (floor rises linearly from boundsMin[1] to 0).
-  const waterWidth  = waterlineX - p.boundsMin[0];
+  const waterDepth  = p.boundsMax[2] - waterlineZ;
   const avgDepth    = Math.abs(p.boundsMin[1]) / 2;
-  const fillVolume  = waterWidth * avgDepth * (p.boundsMax[2] - p.boundsMin[2]);
+  const fillVolume  = waterDepth * avgDepth * (p.boundsMax[0] - p.boundsMin[0]);
 
   const particleMass = p.restDensity * fillVolume / p.numParticles;
 
-  return { ...p, particleMass, waterlineX };
+  return { ...p, particleMass, waterlineZ };
 }
 
 // Convenience re-export so existing imports of CONFIG still work.
@@ -185,11 +185,14 @@ export class SPHSolver {
     const { numParticles: N, smoothingRadius: h } = this.cfg;
 
     // Particle state (flat TypedArrays — cache-friendly, GC-free)
-    this.positions  = new Float32Array(N * 3);
-    this.velocities = new Float32Array(N * 3);
-    this.densities  = new Float32Array(N);
-    this.pressures  = new Float32Array(N);
-    this._forces    = new Float32Array(N * 3);
+    this.positions    = new Float32Array(N * 3);
+    this.velocities   = new Float32Array(N * 3);
+    this.densities    = new Float32Array(N);
+    this.pressures    = new Float32Array(N);
+    this._forces      = new Float32Array(N * 3);
+    // 1 = surface particle (few neighbors above), 0 = buried.
+    // Written each step during _computeDensityPressure, read in _integrate.
+    this._surfaceFlags = new Uint8Array(N);
 
     // Kernel constants for h = 1.5
     // The kernel formulae are unchanged from the original; only h differs.
@@ -237,12 +240,12 @@ export class SPHSolver {
    */
   _initParticles() {
     const { numParticles: N, smoothingRadius: h,
-            boundsMin, boundsMax, waterlineX } = this.cfg;
+            boundsMin, boundsMax, waterlineZ } = this.cfg;
     const pos = this.positions;
 
-    const x0 = boundsMin[0] + h,  x1 = waterlineX - h;
+    const x0 = boundsMin[0] + h,  x1 = boundsMax[0] - h;
     const y0 = boundsMin[1] + h,  y1 = 0.0;
-    const z0 = boundsMin[2] + h,  z1 = boundsMax[2] - h;
+    const z0 = waterlineZ  + h,   z1 = boundsMax[2] - h;
     const volX = x1 - x0, volY = y1 - y0, volZ = z1 - z0;
     const spacing = Math.cbrt(volX * volY * volZ / N) * 0.97;
 
@@ -281,16 +284,16 @@ export class SPHSolver {
    * Teleport particle i back to the deep-water reservoir.
    * Used when a particle escapes the open-ocean edges or strands on the beach.
    *
-   * Reservoir zone (left column of the domain, fully submerged):
-   *   X: [boundsMin[0]+h, boundsMin[0]+15]
+   * Reservoir zone (bottom strip of the domain, fully submerged):
+   *   X: [boundsMin[0]+h, boundsMax[0]−h]
    *   Y: [boundsMin[1]+h, -1]
-   *   Z: [boundsMin[2]+h, boundsMax[2]−h]
+   *   Z: [boundsMax[2]−15, boundsMax[2]−h]  (ocean bottom strip)
    */
   _resetToReservoir(i) {
     const { boundsMin, boundsMax, smoothingRadius: h } = this.cfg;
-    this.positions[3*i    ] = boundsMin[0] + h + Math.random() * (15 - h);
+    this.positions[3*i    ] = boundsMin[0] + h + Math.random() * (boundsMax[0] - boundsMin[0] - 2*h);
     this.positions[3*i + 1] = boundsMin[1] + h + Math.random() * (Math.abs(boundsMin[1]) - h - 1.0);
-    this.positions[3*i + 2] = boundsMin[2] + h + Math.random() * (boundsMax[2] - boundsMin[2] - 2*h);
+    this.positions[3*i + 2] = boundsMax[2] - 15 + Math.random() * (15 - h);
     this.velocities[3*i    ] = 0;
     this.velocities[3*i + 1] = 0;
     this.velocities[3*i + 2] = 0;
@@ -318,28 +321,49 @@ export class SPHSolver {
    */
   _computeDensityPressure() {
     const { numParticles: N, restDensity: rho0,
-            gasConstant: k, particleMass: m } = this.cfg;
-    const pos = this.positions;
-    const den = this.densities;
-    const pre = this.pressures;
-    const h2  = this._h2;
-    const c   = this._poly6Coeff;
-    const nb  = this._neighbors;
+            gasConstant: k, particleMass: m,
+            smoothingRadius: h, surfaceNeighborThreshold } = this.cfg;
+    const pos   = this.positions;
+    const den   = this.densities;
+    const pre   = this.pressures;
+    const flags = this._surfaceFlags;
+    const h2    = this._h2;
+    const c     = this._poly6Coeff;
+    const nb    = this._neighbors;
+
+    // A neighbor counts as "above" if its Y exceeds ours by at least 0.3h.
+    // This gap prevents lateral particles at almost the same height from
+    // being counted as overhead and burying a true surface particle.
+    const aboveDelta = h * 0.3;
 
     for (let i = 0; i < N; i++) {
       const xi = pos[3*i], yi = pos[3*i+1], zi = pos[3*i+2];
       this._hash.query(xi, yi, zi, nb);
 
-      let rho = 0.0;
+      let rho        = 0.0;
+      let aboveCount = 0;
+      const yThresh  = yi + aboveDelta; // neighbor must exceed this Y to count as above
+
       for (let ni = 0; ni < nb.length; ni++) {
-        const j = nb[ni];
-        const dx = xi-pos[3*j], dy = yi-pos[3*j+1], dz = zi-pos[3*j+2];
+        const j  = nb[ni];
+        const dx = xi - pos[3*j];
+        const dy = yi - pos[3*j+1];
+        const dz = zi - pos[3*j+2];
         const r2 = dx*dx + dy*dy + dz*dz;
-        if (r2 < h2) { const q = h2-r2; rho += m * c * q*q*q; }
+
+        if (r2 < h2) {
+          const q = h2 - r2;
+          rho += m * c * q*q*q;
+          // Count neighbors that are meaningfully above this particle
+          if (pos[3*j+1] > yThresh) aboveCount++;
+        }
       }
 
-      den[i] = Math.max(rho, 1.0);
-      pre[i] = k * (den[i] - rho0);
+      den[i]   = Math.max(rho, 1.0);
+      pre[i]   = k * (den[i] - rho0);
+      // Surface if fewer than threshold neighbors are above — works regardless
+      // of absolute Y, so buried particles in deep piles are correctly identified.
+      flags[i] = aboveCount < surfaceNeighborThreshold ? 1 : 0;
     }
   }
 
@@ -399,24 +423,19 @@ export class SPHSolver {
   }
 
   /**
-   * Integration + boundary conditions (ocean simulation stage).
+   * Integration + boundary conditions (portrait-orientation ocean simulation).
+   *
+   * Domain: X ∈ [−30, +30], Y ∈ [−5, +10], Z ∈ [−50, +50].
+   * Waves travel in −Z direction (screen bottom → top).
+   * Beach is at low Z (screen top); open ocean at high Z (screen bottom).
    *
    * Boundary summary:
    *
-   * 1. LEFT-WALL SOFT REFLECT (runs before piston check):
-   *    Soft low-restitution reflect at x = boundsMin[0] = -50.
-   *    Guarantees pos ≥ boundsMin[0]+ε before piston check, so the piston
-   *    never exerts suction on its retreat stroke (sin < 0 → pistonX < -50).
-   *    Restitution = wallDamping² (gentle deflection, no energy injection).
+   * 1. X WALLS (x < −30 or x > +30): reflective — these are the side walls.
    *
-   * 2. WAVE-MAKER PISTON (advance stroke only):
-   *    pistonX = boundsMin[0] + A·sin(2πft)   (A = 5.0 units)
-   *    pistonVel = A·2πf·cos(2πft)
-   *    Moving-wall elastic collision when particle penetrates piston face.
-   *    Because soft reflect ran first, this only fires when sin > 0 (advance).
+   * 2. BOTTOM Z WALL (z > +50): hard reflect — ocean boundary, wave zone.
    *
-   * 3. RIGHT WALL (x > boundsMax[0] = +50):
-   *    Hard reflect — preserves wave-tank behaviour on the far shore side.
+   * 3. TOP Z WALL (z < −50): hard reflect — particles that overshoot the beach.
    *
    * 4. FLOOR — terrain collision:
    *    _floorHeight via cfg.terrainFn; 3D finite-difference normal so
@@ -424,19 +443,17 @@ export class SPHSolver {
    *
    * 5. CEILING (y > boundsMax[1] = +10): hard reflect.
    *
-   * 6. Z WALLS (±boundsMax[2]): reflective.
+   * 6. SAFETY CLAMP.
    *
-   * 7. SAFETY CLAMP.
-   *
-   * 8. BEACH RECYCLE: particles stranded on high dry ground with near-zero
-   *    speed teleport to deep-water reservoir.
+   * 7. BEACH RECYCLE: particles stranded on high dry ground (z < waterlineZ)
+   *    with near-zero speed teleport to the deep-water reservoir.
    */
   _integrate() {
     const { numParticles: N, timeStep: dt, gravity: g,
             wallDamping, boundsMin, boundsMax,
             wave1Amp, wave1Period, waveVariation, waveSpread,
             waveNoiseMod, waveIntensity,
-            waterlineX,
+            waterlineZ,
             beachFriction, recycleSpeedThreshold,
             driftForce, currentX, currentZ, windX } = this.cfg;
     const pos = this.positions;
@@ -467,9 +484,9 @@ export class SPHSolver {
 
     const absG        = Math.abs(g);
     const DEG2RAD     = Math.PI / 180;
-    const domainW     = boundsMax[0] - boundsMin[0];
-    const waveZoneX   = boundsMin[0] + 0.15 * domainW;   // -35 for default domain
-    const waveZoneW   = waveZoneX - boundsMin[0];         // 15 units
+    const domainD     = boundsMax[2] - boundsMin[2];      // 100 units
+    const waveZoneZ   = boundsMax[2] - 0.15 * domainD;   // +35 for default domain
+    const waveZoneW   = boundsMax[2] - waveZoneZ;         // 15 units
 
     // Fixed wave shape constants
     const PERIOD_RATIOS  = [1.0,  0.625, 0.4375, 0.3125, 0.225];
@@ -500,11 +517,11 @@ export class SPHSolver {
       const effAmp   = baseAmp * mod * waveIntensity;
 
       switch (w) {
-        case 0: w0om=omega; w0k=k; w0kx=k*Math.cos(theta); w0kz=k*Math.sin(theta); w0ea=effAmp; break;
-        case 1: w1om=omega; w1k=k; w1kx=k*Math.cos(theta); w1kz=k*Math.sin(theta); w1ea=effAmp; break;
-        case 2: w2om=omega; w2k=k; w2kx=k*Math.cos(theta); w2kz=k*Math.sin(theta); w2ea=effAmp; break;
-        case 3: w3om=omega; w3k=k; w3kx=k*Math.cos(theta); w3kz=k*Math.sin(theta); w3ea=effAmp; break;
-        case 4: w4om=omega; w4k=k; w4kx=k*Math.cos(theta); w4kz=k*Math.sin(theta); w4ea=effAmp; break;
+        case 0: w0om=omega; w0k=k; w0kx=k*Math.sin(theta); w0kz=-k*Math.cos(theta); w0ea=effAmp; break;
+        case 1: w1om=omega; w1k=k; w1kx=k*Math.sin(theta); w1kz=-k*Math.cos(theta); w1ea=effAmp; break;
+        case 2: w2om=omega; w2k=k; w2kx=k*Math.sin(theta); w2kz=-k*Math.cos(theta); w2ea=effAmp; break;
+        case 3: w3om=omega; w3k=k; w3kx=k*Math.sin(theta); w3kz=-k*Math.cos(theta); w3ea=effAmp; break;
+        case 4: w4om=omega; w4k=k; w4kx=k*Math.sin(theta); w4kz=-k*Math.cos(theta); w4ea=effAmp; break;
       }
     }
 
@@ -514,31 +531,50 @@ export class SPHSolver {
       // Acceleration: SPH forces / ρ  +  gravity  +  wave field  +  Force Manager
       const px = pos[3*i], py = pos[3*i + 1], pz = pos[3*i + 2];
       const submerged = py < 0;
-      const driftX = submerged ? -absG * driftForce : 0;
+      const driftZ = submerged ? -absG * driftForce : 0;
       const windFx = submerged ? 0 : windX;
 
-      // Wave field — applied in the left 15% of the domain
-      let wfx = 0, wfz = 0;
-      if (px < waveZoneX) {
-        const alpha = (waveZoneX - px) / waveZoneW;
+      // Wave field — applied in the bottom 15% of the domain (+Z edge)
+      let wfx = 0, wfy = 0, wfz = 0;
+      if (pz > waveZoneZ) {
+        const alpha = (pz - waveZoneZ) / waveZoneW;
         const taper = alpha * alpha;
-        const dd0 = Math.exp(Math.max(-8, w0k * py));
-        const dd1 = Math.exp(Math.max(-8, w1k * py));
-        const dd2 = Math.exp(Math.max(-8, w2k * py));
-        const dd3 = Math.exp(Math.max(-8, w3k * py));
-        const dd4 = Math.exp(Math.max(-8, w4k * py));
-        const f0 = w0ea * w0om * w0om * Math.cos(w0kx*px + w0kz*pz - w0om*t + PHASE_OFFSETS[0]) * dd0 * taper;
-        const f1 = w1ea * w1om * w1om * Math.cos(w1kx*px + w1kz*pz - w1om*t + PHASE_OFFSETS[1]) * dd1 * taper;
-        const f2 = w2ea * w2om * w2om * Math.cos(w2kx*px + w2kz*pz - w2om*t + PHASE_OFFSETS[2]) * dd2 * taper;
-        const f3 = w3ea * w3om * w3om * Math.cos(w3kx*px + w3kz*pz - w3om*t + PHASE_OFFSETS[3]) * dd3 * taper;
-        const f4 = w4ea * w4om * w4om * Math.cos(w4kx*px + w4kz*pz - w4om*t + PHASE_OFFSETS[4]) * dd4 * taper;
+
+        // ── Horizontal component: cos() — drives X/Z orbital motion ──────
+        const f0 = w0ea * w0om * w0om * Math.cos(w0kx*px + w0kz*pz - w0om*t + PHASE_OFFSETS[0]) * taper;
+        const f1 = w1ea * w1om * w1om * Math.cos(w1kx*px + w1kz*pz - w1om*t + PHASE_OFFSETS[1]) * taper;
+        const f2 = w2ea * w2om * w2om * Math.cos(w2kx*px + w2kz*pz - w2om*t + PHASE_OFFSETS[2]) * taper;
+        const f3 = w3ea * w3om * w3om * Math.cos(w3kx*px + w3kz*pz - w3om*t + PHASE_OFFSETS[3]) * taper;
+        const f4 = w4ea * w4om * w4om * Math.cos(w4kx*px + w4kz*pz - w4om*t + PHASE_OFFSETS[4]) * taper;
         wfx = f0*(w0kx/(w0k+1e-8)) + f1*(w1kx/(w1k+1e-8)) + f2*(w2kx/(w2k+1e-8)) + f3*(w3kx/(w3k+1e-8)) + f4*(w4kx/(w4k+1e-8));
         wfz = f0*(w0kz/(w0k+1e-8)) + f1*(w1kz/(w1k+1e-8)) + f2*(w2kz/(w2k+1e-8)) + f3*(w3kz/(w3k+1e-8)) + f4*(w4kz/(w4k+1e-8));
+
+        // ── Vertical component: sin() — directly lifts/lowers surface ────
+        // 90° phase-shifted from horizontal (linear wave orbital motion).
+        // This is what was missing: without it the wave force is purely
+        // horizontal, viscosity damps the pressure-driven vertical response,
+        // and particles never actually elevate at wave crests.
+        // Scale 0.6× horizontal to avoid excessive bouncing while still
+        // producing clear Y displacement the density buffer can detect.
+        wfy = (w0ea * w0om * w0om * Math.sin(w0kx*px + w0kz*pz - w0om*t + PHASE_OFFSETS[0])
+             + w1ea * w1om * w1om * Math.sin(w1kx*px + w1kz*pz - w1om*t + PHASE_OFFSETS[1])
+             + w2ea * w2om * w2om * Math.sin(w2kx*px + w2kz*pz - w2om*t + PHASE_OFFSETS[2])
+             + w3ea * w3om * w3om * Math.sin(w3kx*px + w3kz*pz - w3om*t + PHASE_OFFSETS[3])
+             + w4ea * w4om * w4om * Math.sin(w4kx*px + w4kz*pz - w4om*t + PHASE_OFFSETS[4])
+             ) * taper * 0.6;
+
+        // ── Surface detection gate ────────────────────────────────────────
+        // Only surface particles (few neighbors above) receive direct wave
+        // force. Buried particles get zero — wave energy reaches them via
+        // SPH pressure/viscosity from the surface layer.
+        if (!this._surfaceFlags[i]) {
+          wfx = 0; wfy = 0; wfz = 0;
+        }
       }
 
-      const ax = f[3*i    ] * invRho + currentX + driftX + windFx + wfx;
-      const ay = f[3*i + 1] * invRho + g;
-      const az = f[3*i + 2] * invRho + currentZ + wfz;
+      const ax = f[3*i    ] * invRho + currentX + windFx + wfx;
+      const ay = f[3*i + 1] * invRho + g + wfy;
+      const az = f[3*i + 2] * invRho + currentZ + driftZ + wfz;
 
       // Symplectic Euler: update v first, then r with the new v
       vel[3*i    ] += ax * dt;
@@ -548,13 +584,11 @@ export class SPHSolver {
       pos[3*i + 1] += vel[3*i + 1] * dt;
       pos[3*i + 2] += vel[3*i + 2] * dt;
 
-      // ── LEFT WALL: hard reflect ───────────────────────────────────────
+      // ── X WALLS: reflective boundaries ───────────────────────────────
       if (pos[3*i] < boundsMin[0]) {
         pos[3*i] = boundsMin[0] + 1e-4;
-        if (vel[3*i] < 0) vel[3*i] = Math.abs(vel[3*i]) * wallDamping;
+        vel[3*i] = Math.abs(vel[3*i]) * wallDamping;
       }
-
-      // ── RIGHT WALL: hard reflect ──────────────────────────────────────
       if (pos[3*i] > boundsMax[0]) {
         pos[3*i] = boundsMax[0] - 1e-4;
         vel[3*i] = -Math.abs(vel[3*i]) * wallDamping;
@@ -591,13 +625,15 @@ export class SPHSolver {
         vel[3*i + 1] = -Math.abs(vel[3*i + 1]) * wallDamping;
       }
 
-      // ── Z WALLS: reflective boundaries ───────────────────────────────
+      // ── BOTTOM Z WALL (ocean, +Z): hard reflect ───────────────────────
+      if (pos[3*i + 2] > boundsMax[2]) {
+        pos[3*i + 2] = boundsMax[2] - 1e-4;
+        vel[3*i + 2] = -Math.abs(vel[3*i + 2]) * wallDamping;
+      }
+      // ── TOP Z WALL (beach approach, -Z): hard reflect ─────────────────
       if (pos[3*i + 2] < boundsMin[2]) {
         pos[3*i + 2] = boundsMin[2] + 1e-4;
         vel[3*i + 2] = Math.abs(vel[3*i + 2]) * wallDamping;
-      } else if (pos[3*i + 2] > boundsMax[2]) {
-        pos[3*i + 2] = boundsMax[2] - 1e-4;
-        vel[3*i + 2] = -Math.abs(vel[3*i + 2]) * wallDamping;
       }
 
       // ── SAFETY CLAMP — catch any particle that still escaped ──────────

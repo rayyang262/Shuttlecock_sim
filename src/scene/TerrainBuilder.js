@@ -63,8 +63,10 @@ export function buildTerrain(cfg) {
   const slopeTan = Math.tan((slopeAngleDeg * Math.PI) / 180);
 
   // ── terrainFn ──────────────────────────────────────────────────────────────
+  // Slope runs along Z: floor deepest at boundsMax[2] (ocean bottom, screen bottom),
+  // rising toward boundsMin[2] (beach top, screen top).
   function terrainFn(x, z) {
-    const baseH  = boundsMin[1] + slopeTan * (x - boundsMin[0]);
+    const baseH  = boundsMin[1] + slopeTan * (boundsMax[2] - z);
     const noiseH = noise2D(x * terrainNoiseFreq, z * terrainNoiseFreq) * terrainNoiseAmp;
     const h = baseH + noiseH;
     return h > boundsMax[1] ? boundsMax[1] : h;
@@ -132,8 +134,10 @@ export function buildTerrain(cfg) {
   // smoothstep around y=0 blends seabed → sand across the coastline.
   const material = new THREE.ShaderMaterial({
     uniforms: {
-      uWetness:   { value: wetTexture },
-      uWaterline: { value: 0.0 },
+      uWetness:      { value: wetTexture },
+      uWaterline:    { value: 0.0 },
+      uDrySandColor: { value: new THREE.Color(0xE6EFEA) }, // Gray Tint
+      uWetSandColor: { value: new THREE.Color(0xB5C2BC) }, // Dark Gray Tint
     },
     vertexShader: /* glsl */`
       varying vec2  vUv;
@@ -148,17 +152,38 @@ export function buildTerrain(cfg) {
     fragmentShader: /* glsl */`
       uniform sampler2D uWetness;
       uniform float     uWaterline;
+      uniform vec3      uDrySandColor; // GUI-controlled: Gray Tint #E6EFEA
+      uniform vec3      uWetSandColor; // GUI-controlled: Dark Gray Tint #B5C2BC
       varying vec2  vUv;
       varying float vWorldY;
-      void main() {
-        float wet       = texture2D(uWetness, vUv).r;
-        vec3  drySand   = vec3(0.82, 0.75, 0.51);
-        vec3  wetSand   = vec3(0.45, 0.35, 0.22);
-        vec3  seabed    = vec3(0.05, 0.12, 0.20);
-        vec3  sandColor = mix(drySand, wetSand, wet);
 
-        // Smooth 0.5-unit band around the waterline
-        float above = smoothstep(uWaterline - 0.5, uWaterline + 0.5, vWorldY);
+      void main() {
+        float wet = texture2D(uWetness, vUv).r;
+
+        // ── Sand ripple variation ───────────────────────────────────────
+        // Cheap UV-space sine ripples give sand texture without a lookup.
+        float r1 = sin(vUv.x * 130.0 + vUv.y * 40.0) * 0.022;
+        float r2 = sin(vUv.y * 90.0  + vUv.x * 55.0) * 0.015;
+        float ripple = r1 + r2; // range ≈ ±0.037
+
+        // Apply ripple variation to the uniform dry-sand base color
+        vec3 drySand = clamp(uDrySandColor + vec3(ripple * 0.5, ripple * 0.45, ripple * 0.25), 0.0, 1.0);
+        // Wet sand uses the uniform directly (no ripple — water flattens texture)
+        vec3 wetSand = uWetSandColor;
+
+        // Wet/dry blend
+        vec3 sandColor = mix(drySand, wetSand, wet * wet);
+
+        // ── Seabed colour — visible dark teal instead of near-black ────
+        // Add a subtle depth gradient so the seabed looks deeper at the ocean bottom.
+        // vUv.y = 1 maps to worldZ = boundsMax[2] (ocean bottom, screen bottom) = deepest.
+        float seabedDepth = vUv.y; // deeper = high vUv.y = darker
+        vec3 shallowBed = vec3(0.10, 0.22, 0.38);
+        vec3 deepBed    = vec3(0.04, 0.10, 0.20);
+        vec3 seabed     = mix(shallowBed, deepBed, seabedDepth * seabedDepth);
+
+        // ── Waterline blend ─────────────────────────────────────────────
+        float above = smoothstep(uWaterline - 0.6, uWaterline + 0.6, vWorldY);
         gl_FragColor = vec4(mix(seabed, sandColor, above), 1.0);
       }
     `,
@@ -172,15 +197,25 @@ export function buildTerrain(cfg) {
 }
 
 // ─── updateWetness ────────────────────────────────────────────────────────────
+//
+// GPU-readback version: samples the post-blur, post-mask fluid density buffer
+// instead of iterating particle positions. Only cells where the RENDERED water
+// surface actually exists (density > densityThreshold) become wet, eliminating
+// the thin streaky trails left by isolated fast-moving particles.
+//
+// densityPixels  — Uint8Array(128×80×4) from FluidRenderer.readWetnessPixels()
+//                  R channel: density × 255. GL convention: row 0 = GL bottom
+//                  = UV.y = 0 = worldZ = boundsMax[2].  Y-flip applied below.
+// densityThreshold — should match the fluid surface threshold used in rendering
 
 export function updateWetness(
   wetGrid,
   wetTexture,
-  positions,
-  numParticles,
+  densityPixels,
   cfg,
   terrainFn,
-  dryRate = 0.002,
+  dryRate           = 0.002,
+  densityThreshold  = 0.55,
 ) {
   const { boundsMin, boundsMax } = cfg;
   const xMin = boundsMin[0], xMax = boundsMax[0];
@@ -188,33 +223,40 @@ export function updateWetness(
   const xRange = xMax - xMin;
   const zRange = zMax - zMin;
 
-  // Global drying
+  // Global drying — unchanged
   const dryFactor = 1 - dryRate;
   for (let k = 0; k < wetGrid.length; k++) wetGrid[k] *= dryFactor;
 
-  // Mark cells wet where a particle is near/on the sand surface (floor > waterline)
-  for (let p = 0; p < numParticles; p++) {
-    const px = positions[p * 3    ];
-    const py = positions[p * 3 + 1];
-    const pz = positions[p * 3 + 2];
+  // Threshold in 0-255 space to avoid per-cell division
+  const threshByte = (densityThreshold * 255) | 0;
 
-    const floorH = terrainFn(px, pz);
-    if (floorH > -0.2 && py <= floorH + 0.5) {
-      const i = Math.min(
-        WET_GRID_W - 1,
-        Math.max(0, Math.floor(((px - xMin) / xRange) * WET_GRID_W)),
-      );
-      const j = Math.min(
-        WET_GRID_H - 1,
-        Math.max(0, Math.floor(((pz - zMin) / zRange) * WET_GRID_H)),
-      );
-      const cellIdx = j * WET_GRID_W + i;
-      const nv = wetGrid[cellIdx] + 0.15;
-      wetGrid[cellIdx] = nv > 1.0 ? 1.0 : nv;
+  // Walk every wetness cell, sample the density readback buffer
+  for (let j = 0; j < WET_GRID_H; j++) {
+    for (let i = 0; i < WET_GRID_W; i++) {
+      // Centre of this wetness cell in world space
+      const wx = xMin + (i + 0.5) / WET_GRID_W * xRange;
+      const wz = zMin + (j + 0.5) / WET_GRID_H * zRange;
+
+      // Skip deep-ocean cells — no sand there to wet, and skipping saves ~40%
+      // of the inner loop on typical terrain configs
+      if (terrainFn(wx, wz) < -0.5) continue;
+
+      // Map wetness cell (i, j) → readback pixel.
+      // GL row 0 = bottom of texture = UV.y = 0 = worldZ = boundsMax[2].
+      // Wetness j = 0 → worldZ = boundsMin[2] → UV.y = 1 → GL row = H - 1.
+      const glRow   = WET_GRID_H - 1 - j;
+      const pixBase = (glRow * WET_GRID_W + i) * 4; // RGBA stride
+      const densR   = densityPixels[pixBase];        // R channel, 0-255
+
+      if (densR > threshByte) {
+        const cellIdx = j * WET_GRID_W + i;
+        const nv = wetGrid[cellIdx] + 0.15;
+        wetGrid[cellIdx] = nv > 1.0 ? 1.0 : nv;
+      }
     }
   }
 
-  // Upload to DataTexture
+  // Upload to DataTexture — unchanged
   const pixels = wetTexture.image.data;
   for (let k = 0; k < wetGrid.length; k++) {
     pixels[k] = (wetGrid[k] * 255) | 0;

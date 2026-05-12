@@ -3,35 +3,64 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SPH Fluid Simulation – Phase 1</title>
+    <title>SPH Ocean Simulator</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { background: #0a0a12; overflow: hidden; }
+      body { background: #000000; overflow: hidden; }
       canvas { display: block; }
-      #side-label {
+
+      /* ── Loading screen ─────────────────────────────────────────── */
+      #loading {
         position: fixed;
-        right: 10px;
-        bottom: 136px;
-        color: rgba(255,255,255,0.55);
-        font: 11px/1 monospace;
-        pointer-events: none;
-        letter-spacing: 0.05em;
+        inset: 0;
+        background: #050d14;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        z-index: 9999;
+        opacity: 1;
+        transition: opacity 0.85s ease;
+        pointer-events: all;
       }
-      #side-border {
-        position: fixed;
-        right: 10px;
-        bottom: 10px;
-        width: 340px;
-        height: 120px;
-        border: 1px solid rgba(255,255,255,0.25);
-        border-radius: 3px;
+      #loading.fade-out {
+        opacity: 0;
         pointer-events: none;
+      }
+      #loading .title {
+        font: 600 22px/1 system-ui, sans-serif;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #7ec8e3;
+      }
+      #loading .sub {
+        font: 13px/1 monospace;
+        color: rgba(126,200,227,0.5);
+        letter-spacing: 0.08em;
+      }
+      #loading .spinner {
+        width: 32px;
+        height: 32px;
+        border: 2px solid rgba(126,200,227,0.15);
+        border-top-color: #7ec8e3;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* ── Mobile ─────────────────────────────────────────────────── */
+      @media (max-width: 767px) {
+        .lil-gui { display: none !important; }
       }
     </style>
   </head>
   <body>
-    <div id="side-label">SIDE VIEW</div>
-    <div id="side-border"></div>
+    <div id="loading">
+      <div class="spinner"></div>
+      <div class="title">SPH Ocean</div>
+      <div class="sub">initialising simulation&hellip;</div>
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
