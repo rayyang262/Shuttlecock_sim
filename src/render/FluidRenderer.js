@@ -33,7 +33,7 @@ import * as THREE from 'three';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const DOMAIN_W = 60; // world units — matches buildCamera(60, 100)
+// No hardcoded domain width — PPU is derived from the camera frustum each frame.
 
 // ─── FluidRenderer ───────────────────────────────────────────────────────────
 
@@ -104,8 +104,11 @@ export class FluidRenderer {
     const savedAlpha = r.getClearAlpha();
     r.getClearColor(savedColor);
 
-    const vpW = r.domElement.width;
-    const ppu = (vpW * this._camera.zoom) / DOMAIN_W;
+    // Pixels per world unit: derive from actual camera frustum width so it stays
+    // correct for any domain size, aspect ratio, or zoom level.
+    const vpW      = r.domElement.width;
+    const frustumW = (this._camera.right - this._camera.left) / this._camera.zoom;
+    const ppu      = vpW / frustumW;
     this._splatMat.uniforms.uSplatRadius.value  = this.splatRadius;
     this._splatMat.uniforms.uPixelsPerUnit.value = ppu;
 

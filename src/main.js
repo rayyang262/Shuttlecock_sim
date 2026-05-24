@@ -34,7 +34,7 @@ scene.add(sunLight);
 
 // ─── Camera ──────────────────────────────────────────────────────────────────
 
-const camera = buildCamera(60, 100);
+const camera = buildCamera(100, 60);
 const detachZoom = attachZoom(camera, renderer.domElement);
 
 // ─── Background gradient ─────────────────────────────────────────────────────

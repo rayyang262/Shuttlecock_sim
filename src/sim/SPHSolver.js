@@ -90,9 +90,9 @@ export const DEFAULT_PARAMS = {
   substeps:    3,
   wallDamping: 0.4,
 
-  // Domain — 60 × 15 × 100 world units
-  boundsMin: [-30, -5, -50],
-  boundsMax: [ 30, 10,  50],
+  // Domain — 100 × 15 × 60 world units  (landscape: wide X, shallow Z)
+  boundsMin: [-50, -5, -30],
+  boundsMax: [ 50, 10,  30],
 
   // Global terrain slope (bottom=low, top=high along Z).
   // computeDerivedConfig derives waterlineZ from this.
