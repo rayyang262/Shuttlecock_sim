@@ -2,12 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no" />
     <title>SPH Ocean Simulator</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { background: #000000; overflow: hidden; }
       canvas { display: block; }
+
+      /* Prevent pinch-zoom and double-tap-zoom on touch devices.
+         pan-x pan-y still allows scrolling gestures if needed. */
+      html, body, canvas {
+        touch-action: pan-x pan-y;
+        -webkit-user-select: none;
+        user-select: none;
+      }
 
       /* ── Loading screen ─────────────────────────────────────────── */
       #loading {
@@ -61,6 +69,33 @@
       <div class="title">SPH Ocean</div>
       <div class="sub">initialising simulation&hellip;</div>
     </div>
+    <!-- Block all browser-level zoom so the simulation layout never breaks. -->
+    <script>
+      // Keyboard: Ctrl/Cmd + Plus, Minus, 0
+      document.addEventListener('keydown', function (e) {
+        if ((e.ctrlKey || e.metaKey) && ['+', '-', '=', '_', '0'].includes(e.key)) {
+          e.preventDefault();
+        }
+      });
+
+      // Ctrl/Cmd + wheel (desktop browser zoom)
+      document.addEventListener('wheel', function (e) {
+        if (e.ctrlKey || e.metaKey) e.preventDefault();
+      }, { passive: false });
+
+      // Prevent pinch-zoom on iOS / Android (touchstart / touchmove)
+      document.addEventListener('touchmove', function (e) {
+        if (e.touches.length > 1) e.preventDefault();
+      }, { passive: false });
+
+      // Prevent double-tap zoom on iOS
+      var lastTap = 0;
+      document.addEventListener('touchend', function (e) {
+        var now = Date.now();
+        if (now - lastTap < 300) e.preventDefault();
+        lastTap = now;
+      }, { passive: false });
+    </script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

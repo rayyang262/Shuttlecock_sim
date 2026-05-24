@@ -8,7 +8,7 @@ import Stats from 'stats.js';
 import { SPHSolver, DEFAULT_PARAMS } from './sim/SPHSolver.js';
 import { ParticleRenderer } from './render/ParticleRenderer.js';
 import { buildTerrain, updateWetness } from './scene/TerrainBuilder.js';
-import { buildCamera, handleResize, attachZoom } from './scene/CameraSetup.js';
+import { buildCamera, handleResize } from './scene/CameraSetup.js';
 import { FluidRenderer } from './render/FluidRenderer.js';
 import { InteractionHandler } from './sim/InteractionHandler.js';
 
@@ -35,7 +35,7 @@ scene.add(sunLight);
 // ─── Camera ──────────────────────────────────────────────────────────────────
 
 const camera = buildCamera(100, 60);
-const detachZoom = attachZoom(camera, renderer.domElement);
+// Zoom is intentionally disabled — camera stays locked to fill the viewport.
 
 // ─── Background gradient ─────────────────────────────────────────────────────
 // Full-screen navy gradient rendered before the main scene so background areas
