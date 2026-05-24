@@ -26,7 +26,6 @@ document.body.appendChild(renderer.domElement);
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x000000);
 
 scene.add(new THREE.AmbientLight(0xffd090, 0.55));
 const sunLight = new THREE.DirectionalLight(0xffffff, 2.5);
@@ -37,6 +36,32 @@ scene.add(sunLight);
 
 const camera = buildCamera(60, 100);
 const detachZoom = attachZoom(camera, renderer.domElement);
+
+// ─── Background gradient ─────────────────────────────────────────────────────
+// Full-screen navy gradient rendered before the main scene so background areas
+// (the X-axis margins that extend beyond the 60-unit domain in landscape mode)
+// look like deep ocean rather than a hard black void.
+
+const bgScene  = new THREE.Scene();
+const bgOrtho  = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const bgMat    = new THREE.ShaderMaterial({
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      // #0a1428 at top (beach side) → #162940 at bottom (open ocean)
+      vec3 topColor    = vec3(0.039, 0.082, 0.157);
+      vec3 bottomColor = vec3(0.086, 0.161, 0.251);
+      gl_FragColor = vec4(mix(bottomColor, topColor, vUv.y), 1.0);
+    }
+  `,
+  depthTest:  false,
+  depthWrite: false,
+});
+bgScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bgMat));
 
 // ─── Stats ───────────────────────────────────────────────────────────────────
 
@@ -129,7 +154,7 @@ function rebuild() {
     terrainNoiseAmp:  CFG.terrainNoiseAmp,
     terrainNoiseFreq: CFG.terrainNoiseFreq,
   });
-  terrainData.mesh.visible = false;
+  terrainData.mesh.visible = true;
   scene.add(terrainData.mesh);
 
   solver = new SPHSolver({
@@ -177,9 +202,12 @@ function rebuild() {
     shallowColor:    CFG.waterShallow,
     foamColor:       CFG.waterFoam,
     posBlend:        CFG.waterPosBlend,
+    // Reduced RT scale for better performance; fluid detail is preserved by blur
+    rtScale:         isMobile ? 0.4 : 0.5,
   });
   fluidRenderer.setBounds(solver.cfg.boundsMin, solver.cfg.boundsMax);
   fluidRenderer.setYBounds(-1.0, 4.0);
+  fluidRenderer.setFrustum(camera);
 
   interaction = new InteractionHandler(renderer, camera);
   interaction.forceRadius   = CFG.forceRadius;
@@ -204,7 +232,10 @@ setTimeout(() => {
 
 window.addEventListener('resize', () => {
   handleResize(camera, renderer);
-  if (fluidRenderer) fluidRenderer.resize();
+  if (fluidRenderer) {
+    fluidRenderer.resize();
+    fluidRenderer.setFrustum(camera);
+  }
 });
 
 // ─── Animation loop ──────────────────────────────────────────────────────────
@@ -239,6 +270,10 @@ function animate(timestamp) {
   renderer.setViewport(0, 0, W, H);
   renderer.clear(true, true, true);
 
+  // Sync frustum uniforms (zoom may have changed since last frame)
+  fluidRenderer.setFrustum(camera);
+
+  renderer.render(bgScene, bgOrtho);   // navy gradient background
   renderer.render(scene, camera);
   fluidRenderer.renderWaterComposite();
   interaction.renderCursor(camera);

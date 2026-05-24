@@ -132,18 +132,21 @@ export function attachZoom(camera, domElement) {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
- * "Cover" frustum: always fills the viewport with no black bars.
+ * "Contain" frustum: always shows the FULL simulation domain with no cropping.
  *
- * Domain aspect = halfW / halfD  (50/30 ≈ 1.667).
+ * Domain is 60 wide (X) × 100 deep (Z) — a portrait aspect of 0.6.
+ * Most screens are landscape (aspect ≈ 1.6–1.78), wider than the domain.
  *
- * Wide viewport  (aspect ≥ domainAspect): fit the domain width exactly,
- *   set height from viewport aspect → some Z is cropped off screen.
+ * Wide viewport  (aspect ≥ domainAspect = 0.6):
+ *   Fit full domain DEPTH (Z) — lock Z to ±halfD, extend X from aspect.
+ *   The domain width (X) fits entirely; background shows on left/right sides.
  *
- * Tall viewport  (aspect <  domainAspect): fit the domain depth exactly,
- *   set width from viewport aspect → some X is cropped off screen.
+ * Tall viewport  (aspect <  domainAspect):
+ *   Fit full domain WIDTH (X) — lock X to ±halfW, extend Z from aspect.
+ *   The domain depth (Z) fits entirely; background shows on top/bottom.
  *
- * Either way the viewport is pixel-perfectly filled by the simulation
- * with square pixels and no letterboxing/pillarboxing.
+ * This ensures the beach (top, -Z) and open ocean (bottom, +Z) are ALWAYS
+ * visible regardless of viewport aspect ratio.
  *
  * @param {number} halfW
  * @param {number} halfD
@@ -154,12 +157,12 @@ function _coverFrustum(halfW, halfD, aspect) {
   const domainAspect = halfW / halfD;
 
   if (aspect >= domainAspect) {
-    // Wider than domain — lock X to domain width, derive Z from aspect
-    const halfH = halfW / aspect;
-    return { left: -halfW, right: halfW, top: halfH, bottom: -halfH };
-  } else {
-    // Taller than domain — lock Z to domain depth, derive X from aspect
+    // Wider than domain — fit full domain DEPTH (Z), extend X from aspect
     const halfR = halfD * aspect;
     return { left: -halfR, right: halfR, top: halfD, bottom: -halfD };
+  } else {
+    // Taller than domain — fit full domain WIDTH (X), extend Z from aspect
+    const halfH = halfW / aspect;
+    return { left: -halfW, right: halfW, top: halfH, bottom: -halfH };
   }
 }

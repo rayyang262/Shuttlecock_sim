@@ -266,6 +266,39 @@ export class FluidRenderer {
   }
 
   /**
+   * Update the camera frustum extents used by the mask and composite shaders for
+   * UV → world-space reconstruction.  Must be called after every camera zoom change
+   * (including on resize) because zoom alters the effective visible frustum.
+   *
+   * With contain-mode camera (landscape screen, portrait domain) the frustum is wider
+   * than the domain in X — passing the actual frustum prevents incorrect edge suppression.
+   *
+   * Encoding convention:
+   *   uFrustumMin = (worldX_leftEdge,  worldZ_topEdge   [beach, most-negative Z])
+   *   uFrustumMax = (worldX_rightEdge, worldZ_bottomEdge[ocean, most-positive  Z])
+   *
+   * With camera.up = (0,0,-1):  screen top = world -Z, screen bottom = world +Z.
+   * So worldZ_top = -camera.top/zoom  and  worldZ_bottom = -camera.bottom/zoom.
+   *
+   * @param {THREE.OrthographicCamera} camera
+   */
+  setFrustum(camera) {
+    const z     = camera.zoom;
+    const fL    =  camera.left   / z;   // worldX at screen left
+    const fR    =  camera.right  / z;   // worldX at screen right
+    const fMinZ = -camera.top    / z;   // worldZ at screen top    (beach, most-negative)
+    const fMaxZ = -camera.bottom / z;   // worldZ at screen bottom (ocean, most-positive)
+
+    const mn = new THREE.Vector2(fL,  fMinZ);
+    const mx = new THREE.Vector2(fR,  fMaxZ);
+
+    this._maskMat.uniforms.uFrustumMin.value.copy(mn);
+    this._maskMat.uniforms.uFrustumMax.value.copy(mx);
+    this._waterMat.uniforms.uFrustumMin.value.copy(mn);
+    this._waterMat.uniforms.uFrustumMax.value.copy(mx);
+  }
+
+  /**
    * Set the Y-axis range used to weight particle density contributions by height.
    * Particles at yMax (wave crest) get weight 1.0; at yMin (seabed) get weight 0.15.
    * Call once after rebuild() whenever boundsMin/boundsMax change.
@@ -450,8 +483,10 @@ export class FluidRenderer {
     this._maskMat = new THREE.ShaderMaterial({
       uniforms: {
         uDensity:    { value: this._blurRT.texture },
-        uBoundsMin:  { value: new THREE.Vector2(-50, -30) },
-        uBoundsMax:  { value: new THREE.Vector2( 50,  30) },
+        uBoundsMin:  { value: new THREE.Vector2(-30, -50) },  // domain XZ min (set by setBounds)
+        uBoundsMax:  { value: new THREE.Vector2( 30,  50) },  // domain XZ max (set by setBounds)
+        uFrustumMin: { value: new THREE.Vector2(-30, -50) },  // camera frustum XZ min (set by setFrustum)
+        uFrustumMax: { value: new THREE.Vector2( 30,  50) },  // camera frustum XZ max (set by setFrustum)
         uEdgeMargin: { value: 6.0 },
       },
       vertexShader: /* glsl */`
@@ -465,16 +500,21 @@ export class FluidRenderer {
         uniform sampler2D uDensity;
         uniform vec2      uBoundsMin;
         uniform vec2      uBoundsMax;
+        uniform vec2      uFrustumMin;
+        uniform vec2      uFrustumMax;
         uniform float     uEdgeMargin;
         varying vec2      vUv;
 
         void main() {
           float d = texture2D(uDensity, vUv).r;
 
-          // Reconstruct world XZ from UV (top-down ortho camera, Y-flipped)
-          vec2  sz     = uBoundsMax - uBoundsMin;
-          float worldX = uBoundsMin.x + vUv.x * sz.x;
-          float worldZ = uBoundsMax.y - vUv.y * sz.y;
+          // Reconstruct world XZ from UV using actual camera frustum extents.
+          // uFrustumMin/Max encode (worldX, worldZ) at screen corners:
+          //   uFrustumMin = (worldX_left,  worldZ_top   [beach, -Z])
+          //   uFrustumMax = (worldX_right, worldZ_bottom[ocean, +Z])
+          vec2  fsz    = uFrustumMax - uFrustumMin;
+          float worldX = uFrustumMin.x + vUv.x * fsz.x;
+          float worldZ = uFrustumMax.y - vUv.y * fsz.y;
 
           // Distance to each non-coastline domain wall.
           // Bottom (+Z, ocean) and both X walls are masked; top (-Z, beach) excluded.
@@ -556,8 +596,10 @@ export class FluidRenderer {
         uOceanDensityMin:  { value: 0.50 },
         uOceanDensityMax:  { value: 0.55 },
         // Domain bounds (XZ) for edge-foam suppression — set via setBounds()
-        uBoundsMin:    { value: new THREE.Vector2(-50, -30) },
-        uBoundsMax:    { value: new THREE.Vector2( 50,  30) },
+        uBoundsMin:    { value: new THREE.Vector2(-30, -50) },  // domain XZ min (set by setBounds)
+        uBoundsMax:    { value: new THREE.Vector2( 30,  50) },  // domain XZ max (set by setBounds)
+        uFrustumMin:   { value: new THREE.Vector2(-30, -50) },  // camera frustum XZ min (set by setFrustum)
+        uFrustumMax:   { value: new THREE.Vector2( 30,  50) },  // camera frustum XZ max (set by setFrustum)
         uEdgeMargin:   { value: 6.0 }, // world units — foam suppressed within this of any edge
         uOpacity:      { value: 1.0 }, // 0=fully transparent, 1=fully opaque
       },
@@ -582,8 +624,10 @@ export class FluidRenderer {
         uniform float     uCrestFoamStart;
         uniform float     uOceanDensityMin;
         uniform float     uOceanDensityMax;
-        uniform vec2      uBoundsMin;   // XZ domain minimums
-        uniform vec2      uBoundsMax;   // XZ domain maximums
+        uniform vec2      uBoundsMin;   // XZ domain minimums (for domain wall distances)
+        uniform vec2      uBoundsMax;   // XZ domain maximums (for domain wall distances)
+        uniform vec2      uFrustumMin;  // XZ frustum minimums (for UV→world reconstruction)
+        uniform vec2      uFrustumMax;  // XZ frustum maximums (for UV→world reconstruction)
         uniform float     uEdgeMargin;  // world units — suppress foam near edges
         uniform float     uOpacity;     // 0=transparent, 1=opaque
         varying vec2      vUv;
@@ -602,12 +646,12 @@ export class FluidRenderer {
           // ── Edge suppression mask — computed first, used by both specular
           //    and foam to avoid glow artefacts at non-coastline domain edges.
           //
-          //    Reconstruct world XZ from UV (top-down ortho camera maps linearly):
-          //      worldX = boundsMin.x + vUv.x * domainW
-          //      worldZ = boundsMax.y - vUv.y * domainH   (UV-Y is flipped)
-          vec2  domainSize    = uBoundsMax - uBoundsMin;
-          float worldX        = uBoundsMin.x + vUv.x * domainSize.x;
-          float worldZ        = uBoundsMax.y - vUv.y * domainSize.y;
+          //    Reconstruct world XZ from UV using camera frustum extents.
+          //    The frustum may be wider than the domain (contain mode on landscape),
+          //    so we use uFrustumMin/Max for UV→world and uBoundsMin/Max for distances.
+          vec2  frustumSize   = uFrustumMax - uFrustumMin;
+          float worldX        = uFrustumMin.x + vUv.x * frustumSize.x;
+          float worldZ        = uFrustumMax.y - vUv.y * frustumSize.y;
 
           // Bottom (+Z, ocean) and both X walls are suppressed; top (-Z, beach) excluded.
           float distBottom = uBoundsMax.y - worldZ;  // ocean bottom wall (+Z)
