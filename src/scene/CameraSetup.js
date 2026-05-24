@@ -1,8 +1,8 @@
 /**
- * CameraSetup.js — Stage 2.5A
+ * CameraSetup.js
  *
- * Top-down OrthographicCamera that fits the full simulation domain in view,
- * with mouse-wheel zoom clamped between 0.5× and 3×.
+ * Top-down OrthographicCamera that fits the full simulation domain in view.
+ * Zoom is intentionally disabled — the camera is fixed to fill the viewport.
  *
  * Public API
  * ----------
@@ -11,19 +11,9 @@
  *
  *   handleResize(camera, renderer)
  *     Call from a window 'resize' listener to keep the domain in frame.
- *
- *   attachZoom(camera, domElement)
- *     Wires up the mouse-wheel listener.  Returns a cleanup function that
- *     removes the listener (call on teardown / rebuild).
  */
 
 import * as THREE from 'three';
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const ZOOM_MIN = 0.5;
-const ZOOM_MAX = 3.0;
-const ZOOM_STEP = 0.1; // zoom delta per wheel tick (normalised)
 
 // ─── buildCamera ──────────────────────────────────────────────────────────────
 
@@ -97,36 +87,6 @@ export function handleResize(camera, renderer) {
   camera.bottom = bottom;
 
   camera.updateProjectionMatrix();
-}
-
-// ─── attachZoom ───────────────────────────────────────────────────────────────
-
-/**
- * Wire mouse-wheel zoom to camera.zoom, clamped to [ZOOM_MIN, ZOOM_MAX].
- *
- * @param {THREE.OrthographicCamera} camera
- * @param {HTMLElement}              domElement   Usually renderer.domElement
- * @returns {Function} cleanup — call to remove the event listener on teardown
- */
-export function attachZoom(camera, domElement) {
-  function onWheel(event) {
-    event.preventDefault();
-
-    // Normalise wheel delta: positive scroll → zoom in (larger zoom value)
-    const delta = event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
-    let newZoom = camera.zoom + delta;
-
-    if (newZoom < ZOOM_MIN) newZoom = ZOOM_MIN;
-    if (newZoom > ZOOM_MAX) newZoom = ZOOM_MAX;
-
-    camera.zoom = newZoom;
-    camera.updateProjectionMatrix();
-  }
-
-  domElement.addEventListener('wheel', onWheel, { passive: false });
-
-  // Return cleanup function
-  return () => domElement.removeEventListener('wheel', onWheel);
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

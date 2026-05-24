@@ -23,6 +23,9 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.autoClear = false;
 document.body.appendChild(renderer.domElement);
 
+// Block all wheel events on the canvas — no camera zoom, no accidental scroll.
+renderer.domElement.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
 const scene = new THREE.Scene();
@@ -270,7 +273,7 @@ function animate(timestamp) {
   renderer.setViewport(0, 0, W, H);
   renderer.clear(true, true, true);
 
-  // Sync frustum uniforms (zoom may have changed since last frame)
+  // Sync frustum uniforms (camera is fixed at zoom=1.0, but call is cheap)
   fluidRenderer.setFrustum(camera);
 
   renderer.render(bgScene, bgOrtho);   // navy gradient background
